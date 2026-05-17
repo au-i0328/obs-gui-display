@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 import qasync
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMainWindow, QStackedWidget
 
@@ -121,9 +121,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self._client:
+            self._client._connected = False
             try:
-                loop = asyncio.get_running_loop()
-                loop.run_until_complete(self._client.disconnect())
+                self._client._ws.disconnect()
             except Exception:
                 pass
         event.accept()

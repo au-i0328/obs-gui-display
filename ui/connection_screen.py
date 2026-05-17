@@ -4,94 +4,20 @@ from typing import Callable, Optional
 
 import qasync
 from PySide6.QtCore import QSize, Qt, Slot, QTimer
-from PySide6.QtGui import QColor, QPalette, QFont, QIcon
+from PySide6.QtGui import QFont, QKeyEvent
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QProgressBar, QProgressDialog, QPushButton, QSizePolicy,
-    QSpacerItem, QToolButton, QVBoxLayout, QWidget, QStyle,
+    QCheckBox, QDialog, QDialogButtonBox,
+    QFormLayout, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QProgressBar, QPushButton,
+    QToolButton, QVBoxLayout, QWidget, QStyle,
 )
 
 from obs_client import OBSClient
-from obs_data import OBSInstance, OBSState
+from obs_data import OBSState
 from websocket_finder import DiscoveredOBS, find_all_obs_websockets
 
 logger = logging.getLogger(__name__)
-
-_STYLESHEET = """
-QWidget {
-    font-family: "Segoe UI", "SF Pro Display", "Ubuntu", sans-serif;
-    font-size: 13px;
-}
-QPushButton {
-    padding: 6px 16px;
-    border-radius: 6px;
-    font-size: 13px;
-}
-QPushButton:primary {
-    background: #2b7dd8;
-    color: white;
-    border: none;
-}
-QPushButton:primary:hover {
-    background: #1a6ac4;
-}
-QPushButton:primary:pressed {
-    background: #155ab0;
-}
-QPushButton[secondary="true"] {
-    background: transparent;
-    color: #2b7dd8;
-    border: 1px solid #2b7dd8;
-}
-QPushButton[secondary="true"]:hover {
-    background: #e8f0fb;
-}
-QListWidget {
-    border: 1px solid #d0d0d0;
-    border-radius: 8px;
-    padding: 4px;
-}
-QListWidget::item {
-    padding: 8px;
-    border-radius: 6px;
-    margin: 2px 0;
-}
-QListWidget::item:selected {
-    background: #c8dcf7;
-}
-QListWidget::item:hover {
-    background: #e8f0fb;
-}
-QLineEdit {
-    border: 1px solid #c0c0c0;
-    border-radius: 6px;
-    padding: 6px 10px;
-}
-QTabWidget::pane {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 8px;
-}
-QTabBar::tab {
-    padding: 8px 16px;
-    border-radius: 6px;
-}
-QTabBar::tab:selected {
-    background: #2b7dd8;
-    color: white;
-}
-QLabel#title {
-    font-size: 20px;
-    font-weight: 600;
-    color: #1a1a2e;
-}
-QLabel#subtitle {
-    font-size: 13px;
-    color: #666;
-}
-"""
 
 
 class DisplaySettingsDialog(QDialog):
@@ -141,8 +67,8 @@ class _AnimatedDots:
 
 
 class ConnectionScreen(QWidget):
-    on_instance_selected: Optional[Callable[[str, int, Optional[str]], None]] = None
-    on_settings_changed: Optional[Callable[[dict], None]] = None
+    _sig_instance_selected = None  # set after qasync init
+    _sig_settings_changed = None
 
     def __init__(
         self,
@@ -158,6 +84,7 @@ class ConnectionScreen(QWidget):
         self._scan_task: Optional[asyncio.Task] = None
         self._discovered: list[DiscoveredOBS] = []
         self._dots = _AnimatedDots()
+        self._pending_connects: dict[str, DiscoveredOBS] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -198,14 +125,14 @@ class ConnectionScreen(QWidget):
 
         self._refresh_btn = QPushButton("Refresh Scan")
         self._refresh_btn.setProperty("secondary", "true")
-        self._refresh_btn.clicked.connect(qasync.asyncSlot()(self.refresh_scan))
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
         btn_row.addWidget(self._refresh_btn)
 
         btn_row.addStretch()
 
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setProperty("primary", "true")
-        self._connect_btn.clicked.connect(qasync.asyncSlot()(self._on_connect_clicked))
+        self._connect_btn.clicked.connect(self._on_connect_clicked)
         self._connect_btn.setEnabled(False)
         btn_row.addWidget(self._connect_btn)
 
@@ -224,9 +151,9 @@ class ConnectionScreen(QWidget):
         if self._progress.isVisible():
             self._status_label.setText(self._dots.text("Scanning all network interfaces"))
 
-    @qasync.asyncSlot()
-    async def refresh_scan(self):
-        if self._scan_task and not self._scan_task.done():
+    @Slot()
+    def _on_refresh_clicked(self):
+        if self._scan_task is not None and not self._scan_task.done():
             return
         self._list_widget.clear()
         self._discovered.clear()
@@ -236,8 +163,11 @@ class ConnectionScreen(QWidget):
         self._connect_btn.setEnabled(False)
         self._scan_task = asyncio.create_task(self._run_scan())
 
-    @qasync.asyncSlot()
-    async def show_error(self, msg: str):
+    def refresh_scan(self):
+        self._on_refresh_clicked()
+
+    @Slot(str)
+    def show_error(self, msg: str):
         self._error_label.setText(msg)
         self._progress.hide()
 
@@ -303,21 +233,22 @@ class ConnectionScreen(QWidget):
     def _on_item_double_clicked(self, item: QListWidgetItem):
         inst = item.data(Qt.ItemDataRole.UserRole)
         if inst:
-            self._show_password_dialog(inst)
+            self._prompt_password(inst)
 
-    @qasync.asyncSlot()
-    async def _on_connect_clicked(self):
+    @Slot()
+    def _on_connect_clicked(self):
         current = self._list_widget.currentItem()
         if not current:
             return
         inst = current.data(Qt.ItemDataRole.UserRole)
         if inst:
-            self._show_password_dialog(inst)
+            self._prompt_password(inst)
 
-    def _show_password_dialog(self, inst: DiscoveredOBS):
+    def _prompt_password(self, inst: DiscoveredOBS):
         if not inst.identified:
             pwd_dlg = QDialog(self)
             pwd_dlg.setWindowTitle("Enter OBS WebSocket Password")
+            pwd_dlg.setModal(True)
             layout = QFormLayout(pwd_dlg)
             pwd_input = QLineEdit()
             pwd_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -326,10 +257,23 @@ class ConnectionScreen(QWidget):
             bb.accepted.connect(pwd_dlg.accept)
             bb.rejected.connect(pwd_dlg.reject)
             layout.addRow(bb)
-            pwd_dlg.exec()
-            password = pwd_input.text() if pwd_dlg.result() == QDialog.DialogCode.Accepted else None
-        else:
-            password = None
 
+            def _do_accept():
+                pwd_dlg.hide()
+                self._do_connect(inst, pwd_input.text())
+
+            def _do_reject():
+                pwd_dlg.hide()
+
+            bb.accepted.disconnect()
+            bb.accepted.connect(_do_accept)
+            bb.rejected.disconnect()
+            bb.rejected.connect(_do_reject)
+
+            pwd_dlg.open()
+        else:
+            self._do_connect(inst, None)
+
+    def _do_connect(self, inst: DiscoveredOBS, password: Optional[str]):
         if self._on_instance_selected:
             self._on_instance_selected(inst.host, inst.port, password)

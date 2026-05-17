@@ -269,6 +269,8 @@ class OBSDashboard(QWidget):
             child = self._audio_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+            elif child.layout():
+                child.layout().deleteLater()
 
         self._audio_meters.clear()
 
@@ -283,13 +285,16 @@ class OBSDashboard(QWidget):
             vol_pct = min(int(inp.volume * 100), 100)
             bar.setValue(vol_pct)
             bar.setStyleSheet(
-                f"QProgressBar {{ border-radius: 4px; text: {vol_pct}%; }}"
+                f"QProgressBar {{ border-radius: 4px; }}"
                 f"QProgressBar::chunk {{ background: {'#ef5350' if inp.muted else '#66bb6a'}; border-radius: 4px; }}"
             )
             row.addWidget(bar, 1)
 
             mute_btn = QPushButton("Mute" if not inp.muted else "Unmute")
-            mute_btn.clicked.connect(qasync.asyncSlot()(lambda n=name: self._on_mute_toggle(n)))
+            captured_name = name
+            mute_btn.clicked.connect(
+                qasync.asyncSlot()(lambda n=captured_name: self._on_mute_toggle(n))
+            )
             row.addWidget(mute_btn)
 
             vol_lbl = QLabel(f"{inp.volume * 100:.0f}%")
@@ -329,6 +334,8 @@ class OBSDashboard(QWidget):
             child = self._media_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+            elif child.layout():
+                child.layout().deleteLater()
 
         if not media_inputs:
             empty_lbl = QLabel("(No media inputs detected. Add a media source in OBS to see controls here.)")
@@ -343,20 +350,29 @@ class OBSDashboard(QWidget):
             name_lbl.setMinimumWidth(150)
             row.addWidget(name_lbl)
 
+            captured_name = name
             play_btn = QPushButton("Play")
-            play_btn.clicked.connect(qasync.asyncSlot()(lambda n=name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY")))
+            play_btn.clicked.connect(
+                qasync.asyncSlot()(lambda n=captured_name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY"))
+            )
             row.addWidget(play_btn)
 
             pause_btn = QPushButton("Pause")
-            pause_btn.clicked.connect(qasync.asyncSlot()(lambda n=name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE")))
+            pause_btn.clicked.connect(
+                qasync.asyncSlot()(lambda n=captured_name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE"))
+            )
             row.addWidget(pause_btn)
 
             stop_btn = QPushButton("Stop")
-            stop_btn.clicked.connect(qasync.asyncSlot()(lambda n=name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")))
+            stop_btn.clicked.connect(
+                qasync.asyncSlot()(lambda n=captured_name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"))
+            )
             row.addWidget(stop_btn)
 
             restart_btn = QPushButton("Restart")
-            restart_btn.clicked.connect(qasync.asyncSlot()(lambda n=name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART")))
+            restart_btn.clicked.connect(
+                qasync.asyncSlot()(lambda n=captured_name: self._on_media_action(n, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"))
+            )
             row.addWidget(restart_btn)
 
             self._media_layout.addLayout(row)
