@@ -790,6 +790,11 @@ class OBSDashboard(QWidget):
         self._net_timer.start(15000)
         self._update_internet_display()
 
+        # Audio visualizer updates every 50ms for smooth animation
+        self._audio_timer = QTimer(self)
+        self._audio_timer.timeout.connect(self._refresh_audio)
+        self._audio_timer.start(50)
+
     def _update_clock(self):
         now = datetime.now()
         date_str = now.strftime("%a %b %d %Y")
@@ -1026,19 +1031,22 @@ class OBSDashboard(QWidget):
 
     def _on_lock_toggle(self):
         self._touch_locked = not self._touch_locked
+        self._update_lock_icon()
         if self._touch_locked:
-            self._lock_btn.setText("Unlock")
+            self.setStyleSheet(f"background: {BG};")
+        else:
+            self.setStyleSheet(f"background: {BG};")
+
+    def _update_lock_icon(self):
+        if self._touch_locked:
+            self._lock_btn.setText("🔓")
             self._lock_btn.setStyleSheet(
-                MUTE_BTN_STYLE % (LIVE_RED, LIVE_RED)
-            )
-            self.setStyleSheet(
-                f"background: {BG};"
-                "QWidget:focus { border: 2px solid %s; }"
-                "" % LIVE_RED
+                f"background: transparent; border: 1px solid {LIVE_RED}; "
+                f"border-radius: 4px; color: {LIVE_RED}; padding: 0;"
             )
         else:
-            self._lock_btn.setText("Lock")
+            self._lock_btn.setText("🔒")
             self._lock_btn.setStyleSheet(
-                MUTE_BTN_STYLE % (PANEL_BORDER, TEXT_SECONDARY)
+                f"background: transparent; border: 1px solid {PANEL_BORDER}; "
+                f"border-radius: 4px; color: {TEXT_SECONDARY}; padding: 0;"
             )
-            self.setStyleSheet(f"background: {BG};")
