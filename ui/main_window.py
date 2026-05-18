@@ -1,11 +1,10 @@
-import asyncio
 import logging
 from typing import Optional
 
 import qasync
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMainWindow, QStackedWidget
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QAction, QResizeEvent
+from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
 
 from config import load as load_config
 from obs_client import OBSClient
@@ -17,11 +16,24 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
+    ASPECT_RATIO = 16.0 / 9.0
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OBS Studio — WebSocket Viewer")
-        self.setMinimumSize(1100, 700)
-        self.resize(1280, 800)
+
+        # Start at a 16:9 size
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geo = screen.geometry()
+            start_w = min(1280, screen_geo.width() * 85 // 100)
+            start_h = int(start_w / self.ASPECT_RATIO)
+            if start_h > screen_geo.height() * 85 // 100:
+                start_h = screen_geo.height() * 85 // 100
+                start_w = int(start_h * self.ASPECT_RATIO)
+        else:
+            start_w, start_h = 1280, 720
+        self.resize(start_w, start_h)
 
         self._config = load_config()
         self._client: Optional[OBSClient] = None
@@ -43,6 +55,8 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._stack.setCurrentWidget(self._connection_screen)
 
+        self._menu_bar_h = self.menuBar().height() if self.menuBar() else 0
+
     def _setup_menu(self):
         menubar = self.menuBar()
         view_menu = menubar.addMenu("View")
@@ -63,6 +77,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(refresh_action)
 
     def _show_connection_screen(self):
+        logger.info("[MainWindow] User switched to: Connection Screen")
         self._stack.setCurrentWidget(self._connection_screen)
 
     def _show_dashboard(self):
@@ -70,18 +85,19 @@ class MainWindow(QMainWindow):
 
     @qasync.asyncSlot()
     async def _on_instance_selected(self, host: str, port: int, password: Optional[str]):
-        url = f"ws://{host}:{port}"
-        logger.info(f"Connecting to OBS at {url}...")
-        self._client = OBSClient(url, password)
+        logger.info("[MainWindow] Instance selected — host=%s port=%s hasPassword=%s", host, port, password is not None)
+        self._client = OBSClient(host, port, password)
         try:
             await self._client.connect(timeout=5.0)
             self._client.on_event(self._on_obs_event)
+            self._dashboard.obs_event.connect(self._dashboard.on_obs_event, Qt.QueuedConnection)
             state = await self._client.get_state()
             self._dashboard.bind(self._client, state)
             self._show_dashboard()
             self.setWindowTitle(f"OBS Studio — {host}:{port}")
+            logger.info("[MainWindow] Successfully connected — dashboard shown")
         except Exception as e:
-            logger.error(f"Connection failed: {e}")
+            logger.error("[MainWindow] Connection failed — host=%s port=%s error=%s", host, port, e)
             self._connection_screen.show_error(f"Connection failed: {e}")
 
     def _on_obs_event(self, event_name: str, event_data: dict):
@@ -90,14 +106,11 @@ class MainWindow(QMainWindow):
         if event_name == "disconnected":
             qasync.QMetaObject.invokeMethod(self, "_on_disconnected", Qt.QueuedConnection)
             return
-        self._client.handle_event(event_name, event_data)
-        qasync.QMetaObject.invokeMethod(
-            self._dashboard, "on_obs_event", Qt.QueuedConnection,
-            Qt.Q_ARG(str, event_name), Qt.Q_ARG(dict, event_data)
-        )
+        self._dashboard.obs_event.emit(event_name)
 
     @qasync.asyncSlot()
     async def _on_disconnected(self):
+        logger.warning("[MainWindow] OBS disconnected — returning to connection screen")
         if self._client:
             await self._client.disconnect()
             self._client = None
@@ -108,6 +121,7 @@ class MainWindow(QMainWindow):
 
     @qasync.asyncSlot()
     async def _disconnect(self):
+        logger.info("[MainWindow] User triggered: Disconnect via menu")
         if self._client:
             await self._client.disconnect()
             self._client = None
@@ -116,13 +130,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OBS Studio — WebSocket Viewer")
 
     def _on_settings_changed(self, config: dict):
+        logger.info("[MainWindow] Display settings changed: %s", config)
         self._config = config
         self._dashboard.apply_config(config)
 
+    def resizeEvent(self, event: QResizeEvent):
+        super().resizeEvent(event)
+        # Enforce 16:9 aspect ratio on every resize
+        new_h = int(self.width() / self.ASPECT_RATIO)
+        if abs(self.height() - new_h) > 2:
+            self.resize(self.width(), new_h)
+
     def closeEvent(self, event):
-        if self._client:
-            self._client._connected = False
+        logger.info("[MainWindow] App closing — cleaning up OBS connection")
+        self._dashboard._internet.stop()
+        if self._client and self._client.is_connected():
             try:
+                self._client._connected = False
                 self._client._ws.disconnect()
             except Exception:
                 pass

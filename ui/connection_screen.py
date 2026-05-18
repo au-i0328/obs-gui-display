@@ -4,7 +4,7 @@ from typing import Callable, Optional
 
 import qasync
 from PySide6.QtCore import QSize, Qt, Slot, QTimer
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QFont, QKeyEvent, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout,
@@ -85,6 +85,7 @@ class ConnectionScreen(QWidget):
         self._discovered: list[DiscoveredOBS] = []
         self._dots = _AnimatedDots()
         self._pending_connects: dict[str, DiscoveredOBS] = {}
+        self._scan_started = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -100,7 +101,7 @@ class ConnectionScreen(QWidget):
         header.addStretch()
 
         settings_btn = QToolButton()
-        settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_SettingsIcon))
+        settings_btn.setText("⚙")
         settings_btn.setToolTip("Display Settings")
         settings_btn.clicked.connect(self._open_settings)
         header.addWidget(settings_btn)
@@ -147,12 +148,19 @@ class ConnectionScreen(QWidget):
         self._retry_timer.timeout.connect(self._animate_status)
         self._retry_timer.start(400)
 
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        if not self._scan_started:
+            self._scan_started = True
+            QTimer.singleShot(0, self._on_refresh_clicked)
+
     def _animate_status(self):
         if self._progress.isVisible():
             self._status_label.setText(self._dots.text("Scanning all network interfaces"))
 
     @Slot()
     def _on_refresh_clicked(self):
+        logger.info("[ConnectionScreen] User pressed: Refresh Scan button")
         if self._scan_task is not None and not self._scan_task.done():
             return
         self._list_widget.clear()
@@ -161,6 +169,7 @@ class ConnectionScreen(QWidget):
         self._status_label.setText("Scanning all network interfaces…")
         self._progress.show()
         self._connect_btn.setEnabled(False)
+        logger.info("[ConnectionScreen] Scan starting")
         self._scan_task = asyncio.create_task(self._run_scan())
 
     def refresh_scan(self):
@@ -172,24 +181,34 @@ class ConnectionScreen(QWidget):
         self._progress.hide()
 
     def _open_settings(self):
+        logger.info("[ConnectionScreen] User opened: Display Settings dialog")
         dlg = DisplaySettingsDialog(self._config, self)
         if dlg.exec():
             new_cfg = dlg.settings()
             self._config.update(new_cfg)
+            logger.info("[ConnectionScreen] Display settings saved: %s", new_cfg)
             if self._on_settings_changed:
                 self._on_settings_changed(new_cfg)
 
     async def _run_scan(self):
         try:
             found_any = False
+            found_count = 0
             async for inst in find_all_obs_websockets(timeout=8.0):
                 found_any = True
+                found_count += 1
                 self._discovered.append(inst)
                 self._add_list_item(inst)
+                logger.info(
+                    "[ConnectionScreen] Scan found instance #%d — address=%s obsVersion=%s wsVersion=%s authRequired=%s",
+                    found_count, inst.address, inst.obs_version, inst.ws_version, not inst.identified
+                )
             if not found_any:
                 self._status_label.setText("No OBS WebSocket instances found.")
+                logger.info("[ConnectionScreen] Scan complete — no instances found")
             else:
                 self._status_label.setText(f"Found {len(self._discovered)} instance(s).")
+                logger.info("[ConnectionScreen] Scan complete — found %d instance(s)", len(self._discovered))
             self._progress.hide()
         except asyncio.CancelledError:
             self._progress.hide()
@@ -233,18 +252,22 @@ class ConnectionScreen(QWidget):
     def _on_item_double_clicked(self, item: QListWidgetItem):
         inst = item.data(Qt.ItemDataRole.UserRole)
         if inst:
+            logger.info("[ConnectionScreen] User double-clicked item: %s", inst.address)
             self._prompt_password(inst)
 
     @Slot()
     def _on_connect_clicked(self):
+        logger.info("[ConnectionScreen] User pressed: Connect button")
         current = self._list_widget.currentItem()
         if not current:
+            logger.warning("[ConnectionScreen] Connect pressed but no item selected")
             return
         inst = current.data(Qt.ItemDataRole.UserRole)
         if inst:
             self._prompt_password(inst)
 
     def _prompt_password(self, inst: DiscoveredOBS):
+        logger.info("[ConnectionScreen] Password dialog opened for instance: %s", inst.address)
         if not inst.identified:
             pwd_dlg = QDialog(self)
             pwd_dlg.setWindowTitle("Enter OBS WebSocket Password")
@@ -259,10 +282,12 @@ class ConnectionScreen(QWidget):
             layout.addRow(bb)
 
             def _do_accept():
+                logger.info("[ConnectionScreen] User accepted password dialog for %s", inst.address)
                 pwd_dlg.hide()
                 self._do_connect(inst, pwd_input.text())
 
             def _do_reject():
+                logger.info("[ConnectionScreen] User cancelled password dialog for %s", inst.address)
                 pwd_dlg.hide()
 
             bb.accepted.disconnect()
@@ -272,8 +297,13 @@ class ConnectionScreen(QWidget):
 
             pwd_dlg.open()
         else:
+            logger.info("[ConnectionScreen] No password required for %s — connecting directly", inst.address)
             self._do_connect(inst, None)
 
     def _do_connect(self, inst: DiscoveredOBS, password: Optional[str]):
+        logger.info(
+            "[ConnectionScreen] Connecting — address=%s hasPassword=%s",
+            inst.address, password is not None and password != ""
+        )
         if self._on_instance_selected:
             self._on_instance_selected(inst.host, inst.port, password)
